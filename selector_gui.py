@@ -133,7 +133,8 @@ class ImageSelector:
             self.index = 0
 
         if self.index >= len(self.preview_files):
-            self.label.config(text="All done!")
+            self.label.config(text="All done!", font=("Arial", 72))
+            self.label.place(relx=0.5, rely=0.5, anchor="center")
             self.instructions.config(text="")
             return
 
