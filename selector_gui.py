@@ -1,6 +1,8 @@
 import sys
 import shutil
 import argparse
+import rawpy
+import numpy as np
 from pathlib import Path
 from tkinter import Tk, Label, filedialog
 from PIL import Image, ImageTk, ImageOps
@@ -68,9 +70,7 @@ class ImageSelector:
         self.resize_job = None
         self.master.bind("<Configure>", self.on_resize)
 
-        self.jpeg_files = sorted(
-            [p for p in self.base_dir.iterdir() if p.suffix.lower() in JPEG_EXTS]
-        )
+        self.preview_files = self.create_preview_map(self.base_dir)
 
         self.index = 0
 
@@ -98,6 +98,7 @@ class ImageSelector:
         master.bind('<Left>', lambda e: self.prev_image())
         master.bind('<Right>', lambda e: self.next_image())
         master.bind('<space>', lambda e: self.like_image())
+        master.bind('<Up>', lambda e: self.like_image())
 
         # WASD navigation
         master.bind('a', lambda e: self.prev_image())
@@ -106,20 +107,54 @@ class ImageSelector:
         master.bind('s', lambda e: self.next_image())
         self.show_image()
 
+    def create_preview_map(self, base_dir: Path) -> list:
+        files = list(base_dir.iterdir())
+
+        jpeg_map = {p.stem: p for p in files if p.suffix.lower() in JPEG_EXTS}
+        raw_map = {p.stem: p for p in files if p.suffix.lower() in SUPPORTED_RAW_EXTS}
+
+        preview_map = {}
+
+        # prefer JPEG
+        for stem, jpeg in jpeg_map.items():
+            preview_map[stem] = jpeg
+
+        # fallback to RAW if no JPEG
+        for stem, raw in raw_map.items():
+            if stem not in preview_map:
+                preview_map[stem] = raw
+
+        preview_files = sorted(preview_map.values())
+
+        return preview_files
+
     def show_image(self) -> None:
         if self.index < 0:
             self.index = 0
 
-        if self.index >= len(self.jpeg_files):
+        if self.index >= len(self.preview_files):
             self.label.config(text="All done!")
             self.instructions.config(text="")
             return
 
-        image_path = self.jpeg_files[self.index]
+        image_path = self.preview_files[self.index]
 
-        with Image.open(image_path) as img:
-            img = ImageOps.exif_transpose(img)
-            self.current_img = img.copy()
+        if image_path.suffix.lower() in SUPPORTED_RAW_EXTS:
+            try:
+                with rawpy.imread(str(image_path)) as raw:
+                    rgb = raw.postprocess(use_camera_wb=True, half_size=True)
+                img = Image.fromarray(rgb)
+            except Exception as e:
+                print(f"RAW decode failed: {image_path} ({e})")
+                self.show_status("RAW error")
+                self.next_image()
+                return
+        else:
+            with Image.open(image_path) as img:
+                img = ImageOps.exif_transpose(img)
+                img = img.copy()
+
+        self.current_img = img
 
         self.render_image()
 
@@ -156,23 +191,24 @@ class ImageSelector:
         self.master.after(duration, self.status_label.place_forget)
 
     def like_image(self) -> None:
-        jpeg_path = self.jpeg_files[self.index]
-        jpeg_stem = jpeg_path.stem
+        image_path = self.preview_files[self.index]
+        stem = image_path.stem
 
-        for ext in SUPPORTED_RAW_EXTS:
-            raw_file = self.base_dir / f"{jpeg_stem}{ext}"
-            if raw_file.exists():
-                shutil.copy2(raw_file, self.output_dir / raw_file.name)
-                self.show_status("✔ Saved")
-                break
+        if image_path.suffix.lower() in SUPPORTED_RAW_EXTS:
+            shutil.copy2(image_path, self.output_dir / image_path.name)
+            self.show_status("✔ Saved")
         else:
-            self.show_status("No RAW")
-
-        # wait a moment so the message is visible
-        self.master.after(20, self.next_image)
+            for ext in SUPPORTED_RAW_EXTS:
+                raw_file = self.base_dir / f"{stem}{ext}"
+                if raw_file.exists():
+                    shutil.copy2(raw_file, self.output_dir / raw_file.name)
+                    self.show_status("✔ Saved")
+                    break
+            else:
+                self.show_status("No RAW")
 
     def next_image(self) -> None:
-        if self.index < len(self.jpeg_files) - 1:
+        if self.index < len(self.preview_files) - 1:
             self.index += 1
         self.show_image()
 
